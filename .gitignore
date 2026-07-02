@@ -1,0 +1,6 @@
+Images/*.wim
+Images/*.esd
+Images/*.swm
+Software/
+Drivers/
+*.log
