@@ -69,6 +69,30 @@ powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive E: -W
 
 这个工具会把 `Autounattend.xml`、`deploy.bat`、`diskpart-uefi.txt`、`unattend.xml`、`Windows` 目录复制到 U 盘根目录，创建 `Images` 目录，并在提供 `-WimPath` 时把镜像复制为 `U盘:\Images\install.wim`。它不会复制 `.gitkeep`，不会执行 `deploy.bat`，不会执行 `diskpart`，也不会执行 DISM。
 
+## 诊断当前 U 盘状态
+
+如果需要检查本机 Windows 启动 U 盘和 ULSEE 部署文件是否准备正确，可以运行只读诊断脚本：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1
+```
+
+指定某个 U 盘盘符：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1 -UsbDrive D:
+```
+
+脚本会在当前目录生成 `USB_DEPLOY_DIAG_*.txt` 报告。它只收集卷信息、部署文件状态、镜像文件位置、脚本/XML 检查结果，并且只允许执行 `dism /Get-WimInfo`。它不会执行 `deploy.bat`、`diskpart`、`dism /Apply-Image`、`bcdboot`，也不会复制或删除镜像文件。
+
+如果镜像很大，默认不会计算哈希；需要时可以显式加入：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1 -UsbDrive D: -IncludeHash
+```
+
+运行后可以把生成的 `USB_DEPLOY_DIAG_*.txt` 发给 ChatGPT 分析。
+
 ## 备用手动方式（故障排查）
 
 如果需要临时禁用自动部署，把 U 盘根目录的：
