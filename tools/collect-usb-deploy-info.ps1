@@ -15,9 +15,13 @@ $ErrorActionPreference = 'Continue'
 $Report = New-Object System.Collections.Generic.List[string]
 $Warnings = New-Object System.Collections.Generic.List[string]
 $ImageFilesFound = New-Object System.Collections.Generic.List[object]
+$DismWimInfoResults = @{}
 $StatusPass = ('{0}{1}' -f [char]0x901A, [char]0x8FC7)
 $StatusMissing = ('{0}{1}' -f [char]0x7F3A, [char]0x5931)
 $StatusWarning = ('{0}{1}' -f [char]0x8B66, [char]0x544A)
+$LabelCurrentState = ('{0}{1}{2}{3}' -f [char]0x5F53, [char]0x524D, [char]0x72B6, [char]0x6001)
+$LabelReason = ('{0}{1}' -f [char]0x539F, [char]0x56E0)
+$LabelRecommendation = ('{0}{1}' -f [char]0x5EFA, [char]0x8BAE)
 
 function Add-Line {
     param([string]$Text = '')
@@ -127,6 +131,43 @@ function Get-FileReportLine {
     }
 }
 
+function Get-PathReportLine {
+    param(
+        [string]$Root,
+        [string]$RelativePath
+    )
+
+    $path = Join-RootPath -Root $Root -RelativePath $RelativePath
+    if (-not (Test-Path -LiteralPath $path)) {
+        return "[$script:StatusMissing] $RelativePath | Path: $path"
+    }
+
+    try {
+        $item = Get-Item -LiteralPath $path -ErrorAction Stop
+        if ($item.PSIsContainer) {
+            return "[$script:StatusPass] $RelativePath | Type: Directory | Modified: $($item.LastWriteTime) | Path: $($item.FullName)"
+        }
+
+        return "[$script:StatusPass] $RelativePath | Type: File | Size: $(Format-ByteSize -Bytes $item.Length) | Modified: $($item.LastWriteTime) | Path: $($item.FullName)"
+    } catch {
+        Add-WarningLine "Failed to inspect ${path}: $($_.Exception.Message)"
+        return "[$script:StatusWarning] $RelativePath | Path: $path | Error: $($_.Exception.Message)"
+    }
+}
+
+function Get-FileLengthOrNull {
+    param([string]$Path)
+
+    try {
+        if (Test-Path -LiteralPath $Path -PathType Leaf) {
+            return (Get-Item -LiteralPath $Path -ErrorAction Stop).Length
+        }
+    } catch {
+        Add-WarningLine "Failed to get file length for ${Path}: $($_.Exception.Message)"
+    }
+    return $null
+}
+
 function Get-TextFileContent {
     param([string]$Path)
 
@@ -172,6 +213,72 @@ function Redact-XmlPasswordValues {
         param($match)
         return $match.Groups[1].Value + '***REDACTED***' + $match.Groups[3].Value
     })
+}
+
+function Get-DeployScriptBehavior {
+    param([string]$DeployPath)
+
+    $content = $null
+    if (Test-Path -LiteralPath $DeployPath -PathType Leaf) {
+        $content = Get-TextFileContent -Path $DeployPath
+    }
+
+    $applyLine = $null
+    $imageFileExpression = $null
+    $imageFileUsesVariable = $false
+    $imageFileUsesFixedDrive = $false
+    if ($content) {
+        $applyLine = ($content -split "`r?`n" | Where-Object { $_ -match '(?i)dism\s+/Apply-Image' } | Select-Object -First 1)
+        if ($applyLine -and $applyLine -match '(?i)/ImageFile:"?([^"\s]+)') {
+            $imageFileExpression = $Matches[1]
+            $imageFileUsesVariable = ($imageFileExpression -match '%[^%]+%')
+            $imageFileUsesFixedDrive = ($imageFileExpression -match '^[A-Za-z]:\\')
+        }
+    }
+
+    $fixedDrivePattern = '(?i)(ImageFile:"?[A-Z]:\\|diskpart\s+/s\s+"?[A-Z]:\\|copy\s+/Y\s+"?[A-Z]:\\|xcopy\s+"?[A-Z]:\\)'
+
+    return [pscustomobject]@{
+        Exists = [bool]$content
+        UsesScriptRoot = ($content -like '*%~dp0*')
+        HasFixedDriveAssumption = ($content -match $fixedDrivePattern)
+        ChecksImagesInstallWim = ($content -match '(?i)if\s+not\s+exist\s+"?%ROOT%Images\\install\.wim')
+        ChecksSourcesInstallWim = ($content -match '(?i)sources\\install\.wim')
+        DismApplyLine = $applyLine
+        ImageFileExpression = $imageFileExpression
+        ImageFileUsesVariable = $imageFileUsesVariable
+        ImageFileUsesFixedDrive = $imageFileUsesFixedDrive
+        ApplyDirIsW = ($content -match '(?i)/ApplyDir:W:\\')
+        BcdbootIsUefiWS = ($content -match '(?i)bcdboot\s+W:\\Windows\s+/s\s+S:\s+/f\s+UEFI')
+        SupportsAutoMode = ($content -match '(?i)/auto')
+        AutoModeAvoidsPause = (($content -match '(?i)if\s+not\s+"%AUTO%"\s*==\s*"1"\s+pause') -or ($content -match '(?i)if\s+"%AUTO%"\s*==\s*"1"'))
+        UsesImagesInstallWim = ($content -match '(?i)Images\\install\.wim')
+        UsesSourcesInstallWim = ($content -match '(?i)sources\\install\.wim')
+        OnlyUsesImagesInstallWim = (($content -match '(?i)Images\\install\.wim') -and ($content -notmatch '(?i)sources\\install\.wim'))
+    }
+}
+
+function Get-AutounattendState {
+    param([string]$Root)
+
+    $autounattendPath = Join-RootPath -Root $Root -RelativePath 'Autounattend.xml'
+    $offPath = Join-RootPath -Root $Root -RelativePath 'Autounattend.off'
+    $content = $null
+    if (Test-Path -LiteralPath $autounattendPath -PathType Leaf) {
+        $content = Get-TextFileContent -Path $autounattendPath
+        $content = Redact-XmlPasswordValues -Text $content
+    }
+
+    return [pscustomobject]@{
+        AutounattendExists = (Test-Path -LiteralPath $autounattendPath -PathType Leaf)
+        AutounattendOffExists = (Test-Path -LiteralPath $offPath -PathType Leaf)
+        Path = $autounattendPath
+        OffPath = $offPath
+        HasRunSynchronous = ($content -match '(?i)RunSynchronous')
+        HasConfigSetRoot = ($content -match '(?i)%configsetroot%')
+        HasDeployBat = ($content -match '(?i)deploy\.bat')
+        HasAuto = ($content -match '(?i)/auto')
+    }
 }
 
 function Search-ImageFilesLimited {
@@ -223,10 +330,19 @@ function Invoke-DismGetWimInfo {
     Add-Line ''
     Add-Line "WIM: $WimPath"
     Add-Line "Command: dism /Get-WimInfo /WimFile:`"$WimPath`""
+    $result = [pscustomobject]@{
+        Path = $WimPath
+        Attempted = $true
+        ExitCode = $null
+        Success = $false
+        Error = $null
+    }
 
     try {
         $output = & dism.exe /Get-WimInfo "/WimFile:$WimPath" 2>&1
         $exitCode = $LASTEXITCODE
+        $result.ExitCode = $exitCode
+        $result.Success = ($exitCode -eq 0)
         Add-Line "ExitCode: $exitCode"
         foreach ($line in $output) {
             Add-Line ($line | Out-String).TrimEnd()
@@ -235,9 +351,13 @@ function Invoke-DismGetWimInfo {
             Add-WarningLine "DISM /Get-WimInfo failed for $WimPath with exit code $exitCode."
         }
     } catch {
+        $result.Error = $_.Exception.Message
         Add-Line "ERROR: $($_.Exception.Message)"
         Add-WarningLine "DISM /Get-WimInfo failed for ${WimPath}: $($_.Exception.Message)"
     }
+
+    $script:DismWimInfoResults[$WimPath.ToLowerInvariant()] = $result
+    return $result
 }
 
 $outputParent = Split-Path -Parent $OutputPath
@@ -353,6 +473,35 @@ if ($candidateRoots.Count -eq 0) {
     }
 }
 
+Add-Section 'USB Root Tree'
+$rootTreeItems = @(
+    'boot',
+    'efi',
+    'sources',
+    'sources\boot.wim',
+    'sources\install.wim',
+    'sources\install.esd',
+    'Autounattend.xml',
+    'deploy.bat',
+    'diskpart-uefi.txt',
+    'unattend.xml',
+    'Images',
+    'Images\install.wim',
+    'Windows\Setup\Scripts\SetupComplete.cmd'
+)
+
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "[$script:StatusWarning] No candidate roots to inspect."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+        foreach ($relativePath in $rootTreeItems) {
+            Add-Line (Get-PathReportLine -Root $candidate.Root -RelativePath $relativePath)
+        }
+    }
+}
+
 Add-Section 'ULSEE Deploy Kit Check'
 $deployCheckFiles = @(
     'Autounattend.xml',
@@ -378,6 +527,61 @@ foreach ($candidate in $candidateRoots) {
         $message = "Notice for $($candidate.Root): this deployment kit does not rely on sources\install.wim or sources\install.esd; actual deployment uses Images\install.wim."
         Add-Line "[$script:StatusWarning] $message"
         Add-WarningLine $message
+    }
+}
+
+Add-Section 'Deploy Script Behavior'
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "[$script:StatusWarning] No candidate roots to inspect."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+        $deployPath = Join-RootPath -Root $candidate.Root -RelativePath 'deploy.bat'
+        $behavior = Get-DeployScriptBehavior -DeployPath $deployPath
+        if (-not $behavior.Exists) {
+            Add-Line "[$script:StatusMissing] deploy.bat is missing; behavior cannot be analyzed."
+            continue
+        }
+
+        Add-ContainsCheck -Label 'deploy.bat uses %~dp0 script root' -Passed $behavior.UsesScriptRoot
+        Add-ContainsCheck -Label 'deploy.bat does not assume a fixed USB drive letter' -Passed (-not $behavior.HasFixedDriveAssumption) -WarningWhenFailed $true
+        Add-ContainsCheck -Label 'deploy.bat checks Images\install.wim' -Passed $behavior.ChecksImagesInstallWim
+        Add-ContainsCheck -Label 'deploy.bat checks sources\install.wim' -Passed $behavior.ChecksSourcesInstallWim -WarningWhenFailed $true
+        Add-Line "DISM Apply-Image line: $(if ($behavior.DismApplyLine) { $behavior.DismApplyLine.Trim() } else { '<not found>' })"
+        Add-Line "DISM ImageFile expression: $(if ($behavior.ImageFileExpression) { $behavior.ImageFileExpression } else { '<not found>' })"
+        Add-Line "DISM ImageFile uses variable: $($behavior.ImageFileUsesVariable)"
+        Add-Line "DISM ImageFile uses fixed drive path: $($behavior.ImageFileUsesFixedDrive)"
+        Add-ContainsCheck -Label 'DISM ApplyDir is W:\' -Passed $behavior.ApplyDirIsW
+        Add-ContainsCheck -Label 'bcdboot uses W:\Windows /s S: /f UEFI' -Passed $behavior.BcdbootIsUefiWS
+        Add-ContainsCheck -Label 'deploy.bat supports /auto mode' -Passed $behavior.SupportsAutoMode
+        Add-ContainsCheck -Label '/auto mode is designed to avoid pause prompts' -Passed $behavior.AutoModeAvoidsPause
+        Add-Line "deploy.bat only recognizes Images\install.wim: $($behavior.OnlyUsesImagesInstallWim)"
+    }
+}
+
+Add-Section 'Autounattend Risk State'
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "[$script:StatusWarning] No candidate roots to inspect."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+        $autoState = Get-AutounattendState -Root $candidate.Root
+        Add-Line "Autounattend.xml exists: $($autoState.AutounattendExists)"
+        Add-Line "Autounattend.off exists: $($autoState.AutounattendOffExists)"
+        if ($autoState.AutounattendExists) {
+            Add-Line "AUTO DEPLOY ENABLED: booting this USB may automatically erase Disk 0"
+            Add-WarningLine "AUTO DEPLOY ENABLED on $($candidate.Root): booting this USB may automatically erase Disk 0."
+        } elseif ($autoState.AutounattendOffExists) {
+            Add-Line 'AUTO DEPLOY DISABLED'
+        } else {
+            Add-Line 'AUTO DEPLOY UNKNOWN: neither Autounattend.xml nor Autounattend.off was found.'
+        }
+        Add-ContainsCheck -Label 'Autounattend.xml contains RunSynchronous' -Passed $autoState.HasRunSynchronous -WarningWhenFailed $true
+        Add-ContainsCheck -Label 'Autounattend.xml contains %configsetroot%' -Passed $autoState.HasConfigSetRoot -WarningWhenFailed $true
+        Add-ContainsCheck -Label 'Autounattend.xml contains deploy.bat' -Passed $autoState.HasDeployBat -WarningWhenFailed $true
+        Add-ContainsCheck -Label 'Autounattend.xml contains /auto' -Passed $autoState.HasAuto -WarningWhenFailed $true
     }
 }
 
@@ -417,6 +621,10 @@ foreach ($candidate in $candidateRoots) {
     if (Test-Path -LiteralPath $candidateWim -PathType Leaf) {
         [void]$wimInfoTargets.Add((Get-Item -LiteralPath $candidateWim).FullName)
     }
+    $candidateSourcesWim = Join-RootPath -Root $candidate.Root -RelativePath 'sources\install.wim'
+    if (Test-Path -LiteralPath $candidateSourcesWim -PathType Leaf) {
+        [void]$wimInfoTargets.Add((Get-Item -LiteralPath $candidateSourcesWim).FullName)
+    }
 }
 foreach ($image in $uniqueImages) {
     if ($image.Name -ieq 'install.wim') {
@@ -428,7 +636,162 @@ if ($wimInfoTargets.Count -eq 0) {
     Add-Line "[$script:StatusWarning] No install.wim targets found for DISM /Get-WimInfo."
 } else {
     foreach ($target in $wimInfoTargets) {
-        Invoke-DismGetWimInfo -WimPath $target
+        [void](Invoke-DismGetWimInfo -WimPath $target)
+    }
+}
+
+Add-Section 'Deployment Decision Summary'
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "$script:LabelCurrentState / Current state: NO USB CANDIDATE FOUND"
+    Add-Line "$script:LabelReason / Reason: no accessible drive matched Windows USB or U-Create deploy markers."
+    Add-Line "$script:LabelRecommendation / Recommendation: run again with -UsbDrive D: using the actual USB drive letter."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+
+        $imagesWimPath = Join-RootPath -Root $candidate.Root -RelativePath 'Images\install.wim'
+        $sourcesWimPath = Join-RootPath -Root $candidate.Root -RelativePath 'sources\install.wim'
+        $sourcesEsdPath = Join-RootPath -Root $candidate.Root -RelativePath 'sources\install.esd'
+        $deployPath = Join-RootPath -Root $candidate.Root -RelativePath 'deploy.bat'
+        $behavior = Get-DeployScriptBehavior -DeployPath $deployPath
+        $autoState = Get-AutounattendState -Root $candidate.Root
+
+        $imagesWimExists = Test-Path -LiteralPath $imagesWimPath -PathType Leaf
+        $imagesWimLength = Get-FileLengthOrNull -Path $imagesWimPath
+        $imagesWimZeroBytes = ($imagesWimExists -and $imagesWimLength -eq 0)
+        $imagesWimUsable = ($imagesWimExists -and $imagesWimLength -gt 0)
+        $sourcesWimExists = Test-Path -LiteralPath $sourcesWimPath -PathType Leaf
+        $sourcesEsdExists = Test-Path -LiteralPath $sourcesEsdPath -PathType Leaf
+
+        $sourcesDismStatus = 'not attempted or not present'
+        if ($sourcesWimExists) {
+            $sourcesWimFull = (Get-Item -LiteralPath $sourcesWimPath).FullName
+            $sourcesDism = $script:DismWimInfoResults[$sourcesWimFull.ToLowerInvariant()]
+            if ($sourcesDism) {
+                $sourcesDismStatus = if ($sourcesDism.Success) { 'OK: DISM /Get-WimInfo recognized sources\install.wim' } else { "FAILED: DISM /Get-WimInfo exit code $($sourcesDism.ExitCode)" }
+            }
+        }
+
+        $availableImages = New-Object System.Collections.Generic.List[string]
+        if ($imagesWimExists) { [void]$availableImages.Add("Images\install.wim ($(Format-ByteSize -Bytes $imagesWimLength))") }
+        if ($sourcesWimExists) { [void]$availableImages.Add('sources\install.wim') }
+        if ($sourcesEsdExists) { [void]$availableImages.Add('sources\install.esd') }
+        if ($availableImages.Count -eq 0) { [void]$availableImages.Add('<none found in expected USB locations>') }
+
+        $resolvedDeployImage = '<not found>'
+        if ($behavior.ImageFileExpression) {
+            $resolvedDeployImage = $behavior.ImageFileExpression.Replace('%ROOT%', $candidate.Root)
+        }
+
+        $toolsCopied = (
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'Autounattend.xml') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'deploy.bat') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'diskpart-uefi.txt') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'unattend.xml')
+        )
+
+        $pathMatchesDeployBat = ($behavior.OnlyUsesImagesInstallWim -and $imagesWimUsable)
+        $autoReady = ($autoState.AutounattendExists -and $autoState.HasRunSynchronous -and $autoState.HasConfigSetRoot -and $autoState.HasDeployBat -and $autoState.HasAuto)
+        $deployReady = ($candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $behavior.ApplyDirIsW -and $behavior.BcdbootIsUefiWS)
+
+        Add-Line "Windows boot USB: $($candidate.LooksLikeWindowsUsb)"
+        Add-Line "U-Create deploy tools copied: $toolsCopied"
+        Add-Line "Available image location(s): $($availableImages -join '; ')"
+        Add-Line "Images\install.wim exists: $imagesWimExists"
+        Add-Line "Images\install.wim is 0 bytes: $imagesWimZeroBytes"
+        Add-Line "sources\install.wim exists: $sourcesWimExists"
+        Add-Line "sources\install.wim DISM /Get-WimInfo: $sourcesDismStatus"
+        Add-Line "sources\install.esd exists: $sourcesEsdExists"
+        Add-Line "deploy.bat actual ImageFile expression: $(if ($behavior.ImageFileExpression) { $behavior.ImageFileExpression } else { '<not found>' })"
+        Add-Line "deploy.bat resolved image path for this USB: $resolvedDeployImage"
+        Add-Line "deploy.bat only recognizes Images\install.wim: $($behavior.OnlyUsesImagesInstallWim)"
+        Add-Line "USB image location matches deploy.bat: $pathMatchesDeployBat"
+        Add-Line "Autounattend auto deploy ready: $autoReady"
+
+        if ($deployReady -and $autoReady) {
+            Add-Line "$script:LabelCurrentState / Current state: CAN ENTER TEST DEPLOYMENT"
+            Add-Line "$script:LabelReason / Reason: Autounattend.xml, deploy.bat, diskpart script, unattend.xml, Windows USB files, and Images\install.wim are present and match current deploy.bat behavior."
+            Add-Line "$script:LabelRecommendation / Recommended next action: if this is the intended target workflow, boot a test machine only after confirming Disk 0 can be erased."
+        } elseif ($autoState.AutounattendExists -and -not $pathMatchesDeployBat) {
+            Add-Line "$script:LabelCurrentState / Current state: DO NOT BOOT FOR AUTO DEPLOY"
+            Add-Line "$script:LabelReason / Reason: AUTO DEPLOY ENABLED but current image location does not match deploy.bat behavior."
+            if ($sourcesWimExists -and -not $imagesWimUsable) {
+                Add-Line "$script:LabelRecommendation / Recommended next action: ask Codex whether to add sources\install.wim fallback or copy a valid image to Images\install.wim. Do not delete sources\install.wim yet."
+            } else {
+                Add-Line "$script:LabelRecommendation / Recommended next action: disable Autounattend.xml before booting, then fix missing or zero-byte Images\install.wim."
+            }
+        } elseif (-not $autoState.AutounattendExists) {
+            Add-Line "$script:LabelCurrentState / Current state: AUTO DEPLOY NOT ENABLED"
+            Add-Line "$script:LabelReason / Reason: Autounattend.xml is not present at USB root."
+            Add-Line "$script:LabelRecommendation / Recommended next action: keep auto deploy disabled until ChatGPT confirms the USB image path and deploy.bat behavior match."
+        } elseif (-not $candidate.LooksLikeWindowsUsb) {
+            Add-Line "$script:LabelCurrentState / Current state: NOT READY"
+            Add-Line "$script:LabelReason / Reason: this drive does not look like a complete Windows installation USB."
+            Add-Line "$script:LabelRecommendation / Recommended next action: rebuild or verify the Windows 11 boot USB structure before deployment."
+        } elseif (-not $toolsCopied) {
+            Add-Line "$script:LabelCurrentState / Current state: NOT READY"
+            Add-Line "$script:LabelReason / Reason: U-Create deployment files are missing from the USB root."
+            Add-Line "$script:LabelRecommendation / Recommended next action: run copy-to-usb.ps1 or manually place the missing U-Create files."
+        } elseif (-not $imagesWimUsable -and $sourcesWimExists) {
+            Add-Line "$script:LabelCurrentState / Current state: NEED DECISION"
+            Add-Line "$script:LabelReason / Reason: deploy.bat currently only uses Images\install.wim, but the visible image is sources\install.wim."
+            Add-Line "$script:LabelRecommendation / Recommended next action: ask ChatGPT whether to keep current Images\install.wim design or modify deploy.bat later to add sources\install.wim fallback. Do not boot with Autounattend.xml enabled yet."
+        } else {
+            Add-Line "$script:LabelCurrentState / Current state: NOT READY"
+            Add-Line "$script:LabelReason / Reason: one or more required deployment conditions are missing or ambiguous."
+            Add-Line "$script:LabelRecommendation / Recommended next action: review missing/warning lines in this report before enabling auto deployment."
+        }
+    }
+}
+
+Add-Section 'Recommended Next Action For ChatGPT'
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "$script:LabelCurrentState / Current state: not enough USB evidence."
+    Add-Line "$script:LabelRecommendation / Recommendation: run the script again with -UsbDrive <letter>: and send the new report."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+
+        $imagesWimPath = Join-RootPath -Root $candidate.Root -RelativePath 'Images\install.wim'
+        $sourcesWimPath = Join-RootPath -Root $candidate.Root -RelativePath 'sources\install.wim'
+        $deployPath = Join-RootPath -Root $candidate.Root -RelativePath 'deploy.bat'
+        $behavior = Get-DeployScriptBehavior -DeployPath $deployPath
+        $autoState = Get-AutounattendState -Root $candidate.Root
+        $imagesWimLength = Get-FileLengthOrNull -Path $imagesWimPath
+        $imagesWimUsable = ((Test-Path -LiteralPath $imagesWimPath -PathType Leaf) -and $imagesWimLength -gt 0)
+        $sourcesWimExists = Test-Path -LiteralPath $sourcesWimPath -PathType Leaf
+        $toolsCopied = (
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'Autounattend.xml') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'deploy.bat') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'diskpart-uefi.txt') -and
+            (Test-DeployPath -Root $candidate.Root -RelativePath 'unattend.xml')
+        )
+        $pathMatchesDeployBat = ($behavior.OnlyUsesImagesInstallWim -and $imagesWimUsable)
+        $autoReady = ($autoState.AutounattendExists -and $autoState.HasRunSynchronous -and $autoState.HasConfigSetRoot -and $autoState.HasDeployBat -and $autoState.HasAuto)
+
+        if ($candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $autoReady) {
+            Add-Line "$script:LabelCurrentState / Current state: can enter test deployment."
+            Add-Line "$script:LabelReason / Reason: Autounattend.xml, deploy.bat, diskpart, unattend, and valid Images\install.wim are present and matched."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: confirm final safety checklist before booting a test machine."
+        } elseif ($autoState.AutounattendExists -and $sourcesWimExists -and -not $imagesWimUsable -and $behavior.OnlyUsesImagesInstallWim) {
+            Add-Line "$script:LabelCurrentState / Current state: do not start deployment."
+            Add-Line "$script:LabelReason / Reason: deploy.bat currently only uses Images\install.wim, but the visible image is sources\install.wim."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: should Codex later add sources\install.wim fallback, or should the image be placed at Images\install.wim?"
+        } elseif ($autoState.AutounattendExists -and -not $pathMatchesDeployBat) {
+            Add-Line "$script:LabelCurrentState / Current state: disable Autounattend.xml before booting."
+            Add-Line "$script:LabelReason / Reason: automatic deployment is enabled but script/image matching is not confirmed."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: identify which missing item must be fixed before auto deployment."
+        } elseif (-not $autoState.AutounattendExists) {
+            Add-Line "$script:LabelCurrentState / Current state: auto deployment is disabled or not configured."
+            Add-Line "$script:LabelReason / Reason: Autounattend.xml is missing from the USB root."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: confirm whether it is safe to enable Autounattend.xml after fixing image placement."
+        } else {
+            Add-Line "$script:LabelCurrentState / Current state: needs review before deployment."
+            Add-Line "$script:LabelReason / Reason: this report found missing, ambiguous, or mismatched deployment evidence."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: read Deployment Decision Summary and recommend the next file operation. Do not boot target hardware yet."
+        }
     }
 }
 

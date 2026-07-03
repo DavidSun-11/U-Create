@@ -93,6 +93,33 @@ powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1 -Us
 
 运行后可以把生成的 `USB_DEPLOY_DIAG_*.txt` 发给 ChatGPT 分析。
 
+## 先梳理 U 盘结构，再决定是否部署
+
+在还不确定定制镜像应该放在 `Images\install.wim` 还是 `sources\install.wim` 时，先不要直接启动目标机器。请先在本机运行只读诊断：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1 -UsbDrive D:
+```
+
+脚本会生成：
+
+```text
+USB_DEPLOY_DIAG_*.txt
+```
+
+把这份报告发给 ChatGPT 分析，用来判断：
+
+- 当前 U 盘是否是完整 Windows 启动 U 盘
+- U-Create 部署工具是否已经复制到 U 盘根目录
+- 当前有效镜像在 `Images\install.wim` 还是 `sources\install.wim`
+- 当前 `deploy.bat` 的实际逻辑是否和 U 盘镜像位置匹配
+- 是否应该继续使用 `Images\install.wim`
+- 是否需要之后再考虑 `sources\install.wim` fallback
+- 是否应该删除或保留 `sources\install.wim`
+- 是否可以开启 `Autounattend.xml` 自动部署
+
+在 ChatGPT 确认前，不要从该 U 盘启动目标机器。如果 U 盘根目录存在 `Autounattend.xml`，从该 U 盘启动可能自动清空目标机器的 `Disk 0`。
+
 ## 备用手动方式（故障排查）
 
 如果需要临时禁用自动部署，把 U 盘根目录的：
