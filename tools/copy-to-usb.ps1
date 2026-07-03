@@ -65,18 +65,32 @@ if (Test-Path -LiteralPath $windowsSource) {
     Write-Warning "Windows directory not found in kit root: $windowsSource"
 }
 
-$imagesDestination = Join-Path $usbRoot 'Images'
-New-Item -ItemType Directory -Path $imagesDestination -Force | Out-Null
-Write-Host "Ensured Images directory exists"
-
 if ($PSBoundParameters.ContainsKey('WimPath')) {
     if (-not (Test-Path -LiteralPath $WimPath)) {
         throw "WIM file does not exist: $WimPath"
     }
+    $wimItem = Get-Item -LiteralPath $WimPath
+    if ($wimItem.Length -eq 0) {
+        throw "WIM file is 0 bytes and will not be copied: $WimPath"
+    }
+    $imagesDestination = Join-Path $usbRoot 'Images'
+    New-Item -ItemType Directory -Path $imagesDestination -Force | Out-Null
+    Write-Host "Ensured Images directory exists"
     Copy-Item -LiteralPath $WimPath -Destination (Join-Path $imagesDestination 'install.wim') -Force
-    Write-Host "Copied install.wim"
+    Write-Host "Copied install.wim to Images\install.wim"
 } else {
-    Write-Host "No -WimPath provided; install.wim was not copied."
+    Write-Host "No -WimPath provided; Images\install.wim was not created."
+    $existingSourcesWim = Join-Path $usbRoot 'sources\install.wim'
+    if (Test-Path -LiteralPath $existingSourcesWim) {
+        $sourcesWimItem = Get-Item -LiteralPath $existingSourcesWim
+        if ($sourcesWimItem.Length -gt 0) {
+            Write-Host "[OK] Found existing sources\install.wim. deploy.bat can use it."
+        } else {
+            Write-Warning "Found sources\install.wim, but it is 0 bytes. deploy.bat will ignore it."
+        }
+    } else {
+        Write-Warning "No -WimPath provided and sources\install.wim was not found. deploy.bat will not have a valid image unless Images\install.wim already exists."
+    }
 }
 
 Write-Host ''
@@ -87,7 +101,8 @@ $checkPaths = @(
     'diskpart-uefi.txt',
     'unattend.xml',
     'Windows\Setup\Scripts\SetupComplete.cmd',
-    'Images\install.wim'
+    'Images\install.wim',
+    'sources\install.wim'
 )
 
 foreach ($relativePath in $checkPaths) {
@@ -99,5 +114,20 @@ foreach ($relativePath in $checkPaths) {
     }
 }
 
+Write-Host ''
+$imagesWim = Join-Path $usbRoot 'Images\install.wim'
+$sourcesWim = Join-Path $usbRoot 'sources\install.wim'
+$hasValidImagesWim = (Test-Path -LiteralPath $imagesWim) -and ((Get-Item -LiteralPath $imagesWim).Length -gt 0)
+$hasValidSourcesWim = (Test-Path -LiteralPath $sourcesWim) -and ((Get-Item -LiteralPath $sourcesWim).Length -gt 0)
+if ($hasValidImagesWim -or $hasValidSourcesWim) {
+    Write-Host '[OK]      At least one valid deployment image path exists.'
+} else {
+    Write-Warning 'No valid deployment image found at Images\install.wim or sources\install.wim.'
+}
+
+Write-Host ''
+Write-Host 'Image selection priority used by deploy.bat:'
+Write-Host '  1. Images\install.wim'
+Write-Host '  2. sources\install.wim'
 Write-Host ''
 Write-Warning 'When this USB boots, Autounattend.xml will automatically run deployment and erase Disk 0 on the target computer.'

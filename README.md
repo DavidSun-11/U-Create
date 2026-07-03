@@ -1,49 +1,63 @@
 # ULSEE Windows 11 WinPE USB/PXE Deployment Kit
 
-这套文件用于基于 Windows 11 ISO 自带的 WinPE 自动部署自定义镜像。它不替换 `sources\install.wim`，也不走 Windows Setup 正常安装流程；WinPE 启动后会运行 `deploy.bat`，清空目标机器 `Disk 0`，创建 UEFI/GPT 分区，将 `Images\install.wim` 通过 DISM 应用到 `W:`，写入 UEFI 启动文件，然后重启进入 Windows。
+这套文件用于基于 Windows 11 ISO 自带的 WinPE 自动部署自定义镜像。它不走 Windows Setup 正常安装流程；WinPE 启动后会运行 `deploy.bat`，清空目标机器 `Disk 0`，创建 UEFI/GPT 分区，将选中的 `install.wim` 通过 DISM 应用到 `W:`，写入 UEFI 启动文件，然后重启进入 Windows。
 
 ## 方式A：自动部署（默认主流程）
 
 1. 使用 Windows 11 24H2 ISO 正常制作启动 U 盘。
 2. 建议 U 盘使用 NTFS，容量 64GB 或 128GB。
-3. 从 GitHub 下载或 clone 本仓库。
-4. 运行复制工具，例如：
+3. 可以直接使用 U 盘已有的 `sources\install.wim`，不需要额外创建 `Images\install.wim`。
+4. 从 GitHub 下载或 clone 本仓库。
+5. 运行复制工具，把部署工具复制到 U 盘根目录，例如：
 
    ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive E: -WimPath D:\ghost\install.wim
+   powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive D:
    ```
 
-5. U 盘根目录需要存在：
+6. U 盘根目录需要存在：
 
    ```text
    Autounattend.xml
    deploy.bat
    diskpart-uefi.txt
    unattend.xml
-   Images\install.wim
    Windows\Setup\Scripts\SetupComplete.cmd
    ```
 
-   也可以手动把定制镜像放到：
+   镜像文件可以位于：
 
    ```text
+   U盘:\sources\install.wim
    U盘:\Images\install.wim
    ```
 
-6. 保持 U 盘根目录存在：
+   `deploy.bat` 的镜像优先级是：
+
+   ```text
+   1. Images\install.wim
+   2. sources\install.wim
+   ```
+
+   如果要使用外部 WIM，仍可传入 `-WimPath`，复制工具会把它放到 `Images\install.wim`：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive D: -WimPath D:\ghost\install.wim
+   ```
+
+7. 保持 U 盘根目录存在：
 
    ```text
    U盘:\Autounattend.xml
    ```
 
-7. 从 U 盘以 UEFI 模式启动目标电脑。
-8. WinPE 会通过 `Autounattend.xml` 自动执行：
+8. 从 U 盘以 UEFI 模式启动目标电脑。
+9. WinPE 会通过 `Autounattend.xml` 自动执行：
 
    ```cmd
    cmd /c "%configsetroot%\deploy.bat" /auto
    ```
 
-9. 自动部署完成后会重启进入 Windows。
+10. 自动部署完成后会重启进入 Windows。
 
 警告：方式A启动后不需要按 `Shift+F10`，也不会询问确认；自动部署会清空 Disk 0，`/auto` 模式会自动清空目标机器的 `Disk 0` 并部署系统。
 
@@ -51,7 +65,7 @@
 
 - 清空 `Disk 0`
 - 创建 UEFI/GPT 分区，EFI 使用 `S:`，Windows 临时盘符使用 `W:`
-- 使用 `dism /Apply-Image` 应用 `Images\install.wim`
+- 使用 `dism /Apply-Image` 应用镜像，优先 `Images\install.wim`，其次 `sources\install.wim`
 - 将 `unattend.xml` 复制到 `W:\Windows\Panther\Unattend.xml`
 - 如果存在 `Windows\Setup\Scripts`，复制到 `W:\Windows\Setup\Scripts\`
 - 执行 `bcdboot W:\Windows /s S: /f UEFI`
@@ -64,10 +78,18 @@
 在本机仓库目录中运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive E: -WimPath D:\ghost\install.wim
+powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive D:
 ```
 
-这个工具会把 `Autounattend.xml`、`deploy.bat`、`diskpart-uefi.txt`、`unattend.xml`、`Windows` 目录复制到 U 盘根目录，创建 `Images` 目录，并在提供 `-WimPath` 时把镜像复制为 `U盘:\Images\install.wim`。它不会复制 `.gitkeep`，不会执行 `deploy.bat`，不会执行 `diskpart`，也不会执行 DISM。
+这个工具会把 `Autounattend.xml`、`deploy.bat`、`diskpart-uefi.txt`、`unattend.xml`、`Windows` 目录复制到 U 盘根目录。如果没有提供 `-WimPath`，它不会创建 `Images\install.wim`，而是检查 U 盘是否已有 `sources\install.wim`；当前常见做法就是直接使用 Windows 安装 U 盘里的 `sources\install.wim`。
+
+如果要使用外部 WIM，仍可传：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive D: -WimPath D:\ghost\install.wim
+```
+
+提供 `-WimPath` 时，复制工具会把镜像复制为 `U盘:\Images\install.wim`。它不会复制 `.gitkeep`，不会执行 `deploy.bat`，不会执行 `diskpart`，也不会执行 DISM。
 
 ## 诊断当前 U 盘状态
 
@@ -114,7 +136,7 @@ USB_DEPLOY_DIAG_*.txt
 - 当前有效镜像在 `Images\install.wim` 还是 `sources\install.wim`
 - 当前 `deploy.bat` 的实际逻辑是否和 U 盘镜像位置匹配
 - 是否应该继续使用 `Images\install.wim`
-- 是否需要之后再考虑 `sources\install.wim` fallback
+- 是否正在使用 `sources\install.wim` fallback
 - 是否应该删除或保留 `sources\install.wim`
 - 是否可以开启 `Autounattend.xml` 自动部署
 
@@ -163,26 +185,27 @@ for %i in (C D E F G H I J K L M N O P Q R S T U V W X Y Z) do @if exist "%i:\de
    Z:\deploy.bat /auto
    ```
 
-PXE 模式下，部署文件和 `Images\install.wim` 应位于共享目录中，且 `deploy.bat` 会通过 `%~dp0` 自动识别自身所在目录，不依赖固定 U 盘盘符。
+PXE 模式下，部署文件和镜像文件应位于共享目录中。`deploy.bat` 会通过 `%~dp0` 自动识别自身所在目录，不依赖固定 U 盘盘符，并按 `Images\install.wim`、`sources\install.wim` 的顺序选择镜像。
 
-## 目录结构
+## U 盘最终关键结构
 
 ```text
 Autounattend.xml
 deploy.bat
 diskpart-uefi.txt
 unattend.xml
-README.md
-.gitignore
 Images\
-  .gitkeep
+  install.wim          （可选，使用 -WimPath 时创建）
+sources\
+  boot.wim
+  install.wim         （Windows 安装 U 盘自带，可直接用于部署）
 Windows\
   Setup\
     Scripts\
       SetupComplete.cmd
-tools\
-  copy-to-usb.ps1
 ```
+
+不要把真实 `.wim`、`.esd`、`.swm` 文件提交到 git。
 
 ## 安全边界
 

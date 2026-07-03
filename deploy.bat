@@ -3,6 +3,7 @@ setlocal EnableExtensions
 
 set "ROOT=%~dp0"
 set "AUTO=0"
+set "WIM="
 
 if /I "%~1"=="/auto" set "AUTO=1"
 
@@ -12,11 +13,31 @@ echo ============================================================
 echo Script root: "%ROOT%"
 echo.
 
-if not exist "%ROOT%Images\install.wim" (
-    echo [ERROR] Missing image file: "%ROOT%Images\install.wim"
+echo [STEP] Selecting Windows image file...
+if exist "%ROOT%Images\install.wim" (
+    for %%I in ("%ROOT%Images\install.wim") do (
+        if not "%%~zI"=="0" set "WIM=%%~fI"
+    )
+    if not defined WIM echo [WARNING] Ignoring zero-byte image file: "%ROOT%Images\install.wim"
+)
+
+if not defined WIM (
+    if exist "%ROOT%sources\install.wim" (
+        for %%I in ("%ROOT%sources\install.wim") do (
+            if not "%%~zI"=="0" set "WIM=%%~fI"
+        )
+        if not defined WIM echo [WARNING] Ignoring zero-byte image file: "%ROOT%sources\install.wim"
+    )
+)
+
+if not defined WIM (
+    echo [ERROR] No valid Windows image found.
+    echo [ERROR] Expected a non-empty file at one of:
+    echo [ERROR]   "%ROOT%Images\install.wim"
+    echo [ERROR]   "%ROOT%sources\install.wim"
     goto :fail
 )
-echo [OK] Found image file: "%ROOT%Images\install.wim"
+echo [OK] Using image file: "%WIM%"
 
 if not exist "%ROOT%diskpart-uefi.txt" (
     echo [ERROR] Missing diskpart script: "%ROOT%diskpart-uefi.txt"
@@ -53,7 +74,7 @@ echo [OK] Disk partitioning completed.
 echo.
 
 echo [STEP] Applying Windows image to W:\ ...
-dism /Apply-Image /ImageFile:"%ROOT%Images\install.wim" /Index:1 /ApplyDir:W:\ /CheckIntegrity
+dism /Apply-Image /ImageFile:"%WIM%" /Index:1 /ApplyDir:W:\ /CheckIntegrity
 if errorlevel 1 (
     echo [ERROR] DISM Apply-Image failed.
     goto :fail
