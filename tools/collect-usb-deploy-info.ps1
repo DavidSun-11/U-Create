@@ -325,6 +325,37 @@ function Get-AutounattendState {
     }
 }
 
+function Get-BootWimDirectState {
+    param([string]$Root)
+
+    $markerPath = Join-RootPath -Root $Root -RelativePath 'U-Create-BootWim-Patched.txt'
+    $successFlag = Join-RootPath -Root $Root -RelativePath 'DeployLogs\deploy-success.flag'
+    $autounattendPath = Join-RootPath -Root $Root -RelativePath 'Autounattend.xml'
+    $setupModeAutounattend = Join-RootPath -Root $Root -RelativePath 'Autounattend.setup-mode.xml'
+
+    $markerExists = Test-Path -LiteralPath $markerPath -PathType Leaf
+    $autounattendExists = Test-Path -LiteralPath $autounattendPath -PathType Leaf
+    $setupModeExists = Test-Path -LiteralPath $setupModeAutounattend -PathType Leaf
+
+    $mode = 'incomplete'
+    if ($markerExists) {
+        $mode = 'boot.wim direct mode'
+    } elseif ($autounattendExists) {
+        $mode = 'legacy Autounattend mode'
+    }
+
+    return [pscustomobject]@{
+        MarkerExists = $markerExists
+        MarkerPath = $markerPath
+        SuccessFlagExists = (Test-Path -LiteralPath $successFlag -PathType Leaf)
+        SuccessFlagPath = $successFlag
+        AutounattendExists = $autounattendExists
+        SetupModeAutounattendExists = $setupModeExists
+        SetupModeAutounattendPath = $setupModeAutounattend
+        StartupMode = $mode
+    }
+}
+
 function Search-ImageFilesLimited {
     param(
         [string]$Directory,
@@ -528,13 +559,16 @@ $rootTreeItems = @(
     'sources\boot.wim',
     'sources\install.wim',
     'sources\install.esd',
+    'U-Create-BootWim-Patched.txt',
     'Autounattend.xml',
+    'Autounattend.setup-mode.xml',
     'deploy.bat',
     'diskpart-uefi.txt',
     'unattend.xml',
     'Images',
     'Images\install.wim',
-    'Windows\Setup\Scripts\SetupComplete.cmd'
+    'Windows\Setup\Scripts\SetupComplete.cmd',
+    'DeployLogs\deploy-success.flag'
 )
 
 if ($candidateRoots.Count -eq 0) {
@@ -551,7 +585,9 @@ if ($candidateRoots.Count -eq 0) {
 
 Add-Section 'ULSEE Deploy Kit Check'
 $deployCheckFiles = @(
+    'U-Create-BootWim-Patched.txt',
     'Autounattend.xml',
+    'Autounattend.setup-mode.xml',
     'deploy.bat',
     'diskpart-uefi.txt',
     'unattend.xml',
@@ -559,7 +595,8 @@ $deployCheckFiles = @(
     'Windows\Setup\Scripts\SetupComplete.cmd',
     'sources\boot.wim',
     'sources\install.wim',
-    'sources\install.esd'
+    'sources\install.esd',
+    'DeployLogs\deploy-success.flag'
 )
 
 foreach ($candidate in $candidateRoots) {
@@ -636,6 +673,35 @@ if ($candidateRoots.Count -eq 0) {
         Add-ContainsCheck -Label 'Autounattend.xml contains %configsetroot%' -Passed $autoState.HasConfigSetRoot -WarningWhenFailed $true
         Add-ContainsCheck -Label 'Autounattend.xml contains deploy.bat' -Passed $autoState.HasDeployBat -WarningWhenFailed $true
         Add-ContainsCheck -Label 'Autounattend.xml contains /auto' -Passed $autoState.HasAuto -WarningWhenFailed $true
+    }
+}
+
+Add-Section 'Boot.wim Direct Deploy State'
+if ($candidateRoots.Count -eq 0) {
+    Add-Line "[$script:StatusWarning] No candidate roots to inspect."
+} else {
+    foreach ($candidate in $candidateRoots) {
+        Add-Line ''
+        Add-Line "Root: $($candidate.Root)"
+        $bootState = Get-BootWimDirectState -Root $candidate.Root
+        Add-Line "Startup mode: $($bootState.StartupMode)"
+        Add-Line "U-Create-BootWim-Patched.txt exists: $($bootState.MarkerExists)"
+        Add-Line "Autounattend.xml exists: $($bootState.AutounattendExists)"
+        Add-Line "Autounattend.setup-mode.xml exists: $($bootState.SetupModeAutounattendExists)"
+        Add-Line "Deploy success flag exists: $($bootState.SuccessFlagExists)"
+        if ($bootState.SuccessFlagExists) {
+            Add-Line "[STOP] Previous deployment completed. Remove USB or delete DeployLogs\deploy-success.flag to deploy again."
+            Add-WarningLine "Deploy success flag exists on $($candidate.Root); boot.wim direct launcher should not redeploy automatically."
+        }
+        if ($bootState.MarkerExists) {
+            Add-Line 'Current recommended startup mode: boot.wim direct mode'
+        } elseif ($bootState.AutounattendExists) {
+            Add-Line 'Current recommended startup mode: legacy Autounattend mode'
+            Add-Line 'Current state: LEGACY SETUP MODE - Windows Setup may still appear'
+            Add-WarningLine "Boot.wim is not marked as patched on $($candidate.Root), but Autounattend.xml exists. Windows Setup may still appear."
+        } else {
+            Add-Line 'Current recommended startup mode: incomplete'
+        }
     }
 }
 
@@ -721,6 +787,7 @@ if ($candidateRoots.Count -eq 0) {
         $deployPath = Join-RootPath -Root $candidate.Root -RelativePath 'deploy.bat'
         $behavior = Get-DeployScriptBehavior -DeployPath $deployPath
         $autoState = Get-AutounattendState -Root $candidate.Root
+        $bootState = Get-BootWimDirectState -Root $candidate.Root
 
         $imagesWimExists = Test-Path -LiteralPath $imagesWimPath -PathType Leaf
         $imagesWimLength = Get-FileLengthOrNull -Path $imagesWimPath
@@ -762,10 +829,14 @@ if ($candidateRoots.Count -eq 0) {
 
         $pathMatchesDeployBat = (($behavior.SupportsSourcesFallback -and $preferredDeployImage.Exists) -or ($behavior.OnlyUsesImagesInstallWim -and $imagesWimUsable))
         $autoReady = ($autoState.AutounattendExists -and $autoState.HasRunSynchronous -and $autoState.HasConfigSetRoot -and $autoState.HasDeployBat -and $autoState.HasAuto)
-        $deployReady = ($candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $behavior.ApplyDirIsW -and $behavior.BcdbootIsUefiWS)
+        $directReady = ($bootState.MarkerExists -and $candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $behavior.ApplyDirIsW -and $behavior.BcdbootIsUefiWS)
+        $deployReady = ($directReady -or ($candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $behavior.ApplyDirIsW -and $behavior.BcdbootIsUefiWS -and $autoReady))
 
         Add-Line "Windows boot USB: $($candidate.LooksLikeWindowsUsb)"
         Add-Line "U-Create deploy tools copied: $toolsCopied"
+        Add-Line "U-Create boot.wim direct marker exists: $($bootState.MarkerExists)"
+        Add-Line "Startup mode: $($bootState.StartupMode)"
+        Add-Line "Deploy success flag exists: $($bootState.SuccessFlagExists)"
         Add-Line "Available image location(s): $($availableImages -join '; ')"
         Add-Line "Images\install.wim exists: $imagesWimExists"
         Add-Line "Images\install.wim is 0 bytes: $imagesWimZeroBytes"
@@ -781,10 +852,22 @@ if ($candidateRoots.Count -eq 0) {
         Add-Line "USB image location matches deploy.bat: $pathMatchesDeployBat"
         Add-Line "Autounattend auto deploy ready: $autoReady"
 
-        if ($deployReady -and $autoReady) {
-            Add-Line "$script:LabelCurrentState / Current state: CAN ENTER TEST DEPLOYMENT"
-            Add-Line "$script:LabelReason / Reason: Autounattend.xml, deploy.bat, diskpart script, unattend.xml, Windows USB files, and a valid install.wim are present and match current deploy.bat behavior."
-            Add-Line "$script:LabelRecommendation / Recommended next action: if this is the intended target workflow, boot a test machine only after confirming Disk 0 can be erased."
+        if ($bootState.SuccessFlagExists) {
+            Add-Line "$script:LabelCurrentState / Current state: PREVIOUS DEPLOYMENT COMPLETED"
+            Add-Line "$script:LabelReason / Reason: DeployLogs\deploy-success.flag exists and should block repeated automatic deployment."
+            Add-Line "$script:LabelRecommendation / Recommended next action: remove the USB or delete DeployLogs\deploy-success.flag before deploying another machine."
+        } elseif ($directReady) {
+            Add-Line "$script:LabelCurrentState / Current state: READY FOR TRUE UNATTENDED TEST DEPLOYMENT"
+            Add-Line "$script:LabelReason / Reason: boot.wim direct marker, deploy.bat, diskpart script, unattend.xml, Windows USB files, and a valid install.wim are present."
+            Add-Line "$script:LabelRecommendation / Recommended next action: boot only a test machine whose Disk 0 can be erased."
+        } elseif ((-not $bootState.MarkerExists) -and $autoState.AutounattendExists) {
+            Add-Line "$script:LabelCurrentState / Current state: LEGACY SETUP MODE - Windows Setup may still appear"
+            Add-Line "$script:LabelReason / Reason: boot.wim direct marker is missing and Autounattend.xml is present."
+            Add-Line "$script:LabelRecommendation / Recommended next action: run patch-boot-wim.ps1 before expecting true unattended deployment."
+        } elseif ($deployReady -and $autoReady) {
+            Add-Line "$script:LabelCurrentState / Current state: CAN ENTER LEGACY TEST DEPLOYMENT"
+            Add-Line "$script:LabelReason / Reason: Autounattend.xml path appears ready, but boot.wim direct marker is missing."
+            Add-Line "$script:LabelRecommendation / Recommended next action: prefer boot.wim direct mode before unattended testing."
         } elseif ($autoState.AutounattendExists -and -not $pathMatchesDeployBat) {
             Add-Line "$script:LabelCurrentState / Current state: DO NOT BOOT FOR AUTO DEPLOY"
             Add-Line "$script:LabelReason / Reason: AUTO DEPLOY ENABLED but current image location does not match deploy.bat behavior."
@@ -831,6 +914,7 @@ if ($candidateRoots.Count -eq 0) {
         $deployPath = Join-RootPath -Root $candidate.Root -RelativePath 'deploy.bat'
         $behavior = Get-DeployScriptBehavior -DeployPath $deployPath
         $autoState = Get-AutounattendState -Root $candidate.Root
+        $bootState = Get-BootWimDirectState -Root $candidate.Root
         $imagesWimLength = Get-FileLengthOrNull -Path $imagesWimPath
         $imagesWimUsable = ((Test-Path -LiteralPath $imagesWimPath -PathType Leaf) -and $imagesWimLength -gt 0)
         $preferredDeployImage = Get-PreferredDeployImage -Root $candidate.Root
@@ -843,12 +927,21 @@ if ($candidateRoots.Count -eq 0) {
         )
         $pathMatchesDeployBat = (($behavior.SupportsSourcesFallback -and $preferredDeployImage.Exists) -or ($behavior.OnlyUsesImagesInstallWim -and $imagesWimUsable))
         $autoReady = ($autoState.AutounattendExists -and $autoState.HasRunSynchronous -and $autoState.HasConfigSetRoot -and $autoState.HasDeployBat -and $autoState.HasAuto)
+        $directReady = ($bootState.MarkerExists -and $candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $behavior.ApplyDirIsW -and $behavior.BcdbootIsUefiWS)
 
-        if ($candidate.LooksLikeWindowsUsb -and $toolsCopied -and $pathMatchesDeployBat -and $autoReady) {
-            Add-Line "$script:LabelCurrentState / Current state: can enter test deployment."
-            Add-Line "$script:LabelReason / Reason: Autounattend.xml, deploy.bat, diskpart, unattend, and valid install.wim are present and matched."
+        if ($bootState.SuccessFlagExists) {
+            Add-Line "$script:LabelCurrentState / Current state: previous deployment completed."
+            Add-Line "$script:LabelReason / Reason: DeployLogs\deploy-success.flag exists and should stop another automatic deployment."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: confirm whether to delete deploy-success.flag before deploying another machine."
+        } elseif ($directReady) {
+            Add-Line "$script:LabelCurrentState / Current state: READY FOR TRUE UNATTENDED TEST DEPLOYMENT."
+            Add-Line "$script:LabelReason / Reason: boot.wim direct marker, deploy.bat, diskpart, unattend, and valid install.wim are present and matched."
             Add-Line "Selected deployment image: $($preferredDeployImage.Path)"
             Add-Line "$script:LabelRecommendation / Ask ChatGPT: confirm final safety checklist before booting a test machine."
+        } elseif ((-not $bootState.MarkerExists) -and $autoState.AutounattendExists) {
+            Add-Line "$script:LabelCurrentState / Current state: LEGACY SETUP MODE - Windows Setup may still appear."
+            Add-Line "$script:LabelReason / Reason: boot.wim direct marker is missing and Autounattend.xml is present."
+            Add-Line "$script:LabelRecommendation / Ask ChatGPT: confirm patch-boot-wim.ps1 command before booting target hardware."
         } elseif ($autoState.AutounattendExists -and $sourcesWimExists -and -not $preferredDeployImage.Exists) {
             Add-Line "$script:LabelCurrentState / Current state: do not start deployment."
             Add-Line "$script:LabelReason / Reason: an install.wim path exists but no valid non-empty deployment image was selected."
@@ -941,11 +1034,13 @@ if ($Warnings.Count -eq 0) {
 
 Add-Section 'Recommended Next Steps'
 Add-Line '1. Confirm the intended Windows installation USB is listed as a Windows USB candidate.'
-Add-Line '2. Confirm the intended ULSEE deploy disk has Autounattend.xml, deploy.bat, diskpart-uefi.txt, unattend.xml, and a valid install.wim.'
-Add-Line '3. Image priority is Images\install.wim first, then sources\install.wim.'
-Add-Line '4. Review DISM /Get-WimInfo output for the expected Windows image index and edition.'
-Add-Line "5. If anything is marked $script:StatusMissing or $script:StatusWarning, fix the USB content before booting a target computer."
-Add-Line '6. Send this USB_DEPLOY_DIAG_*.txt report to ChatGPT for analysis if you want a second check.'
+Add-Line '2. Confirm U-Create-BootWim-Patched.txt exists for true boot.wim direct mode.'
+Add-Line '3. Confirm deploy.bat, diskpart-uefi.txt, unattend.xml, and a valid install.wim are present.'
+Add-Line '4. Image priority is Images\install.wim first, then sources\install.wim.'
+Add-Line '5. Review DISM /Get-WimInfo output for the expected Windows image index and edition.'
+Add-Line '6. If DeployLogs\deploy-success.flag exists, delete it before deploying another machine.'
+Add-Line "7. If anything is marked $script:StatusMissing or $script:StatusWarning, fix the USB content before booting a target computer."
+Add-Line '8. Send this USB_DEPLOY_DIAG_*.txt report to ChatGPT for analysis if you want a second check.'
 
 Set-Content -LiteralPath $OutputPath -Value $Report -Encoding UTF8
 Write-Host "Report written to: $OutputPath"

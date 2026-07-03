@@ -2,7 +2,85 @@
 
 这套文件用于基于 Windows 11 ISO 自带的 WinPE 自动部署自定义镜像。它不走 Windows Setup 正常安装流程；WinPE 启动后会运行 `deploy.bat`，清空目标机器 `Disk 0`，创建 UEFI/GPT 分区，将选中的 `install.wim` 通过 DISM 应用到 `W:`，写入 UEFI 启动文件，然后重启进入 Windows。
 
-## 方式A：自动部署（默认主流程）
+## 推荐方式：boot.wim 直启无人值守模式
+
+这个模式会 patch Windows 安装 U 盘的 `sources\boot.wim`，让 WinPE 启动后直接运行：
+
+```cmd
+deploy.bat /auto
+```
+
+它不再依赖 Windows Setup 作为主入口，也不再依赖 `Autounattend.xml` 启动部署流程。启动后会自动清空目标机器 `Disk 0`，只允许在可以清空的测试机上验证。
+
+推荐流程：
+
+1. 使用 Windows 11 ISO 正常制作启动 U 盘。
+2. 把定制镜像放到以下任一位置：
+
+   ```text
+   U盘:\sources\install.wim
+   U盘:\Images\install.wim
+   ```
+
+3. 复制 U-Create 工具到 U 盘：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive D:
+   ```
+
+4. Patch `boot.wim`，默认 patch Index 2：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\patch-boot-wim.ps1 -UsbDrive D: -Index 2
+   ```
+
+5. 运行诊断：
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\tools\collect-usb-deploy-info.ps1 -UsbDrive D:
+   ```
+
+6. 只有诊断显示：
+
+   ```text
+   READY FOR TRUE UNATTENDED TEST DEPLOYMENT
+   ```
+
+   才使用测试机从该 U 盘启动。
+
+如果 patch 后仍进入 Windows Setup，可以尝试：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\patch-boot-wim.ps1 -UsbDrive D: -Index 1 -Force
+```
+
+或 patch 所有 boot.wim index：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\patch-boot-wim.ps1 -UsbDrive D: -PatchAllIndexes -Force
+```
+
+如果要恢复最近一次备份：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\patch-boot-wim.ps1 -UsbDrive D: -RestoreLatestBackup
+```
+
+为防止同一个 U 盘重复自动清盘，部署成功后会写入：
+
+```text
+U盘:\DeployLogs\deploy-success.flag
+```
+
+如果要部署下一台机器，需要先删除：
+
+```text
+U盘:\DeployLogs\deploy-success.flag
+```
+
+`boot.wim` direct mode 下，`Autounattend.xml` 不是主入口。`patch-boot-wim.ps1` 默认会把 U 盘根目录的 `Autounattend.xml` 改名为 `Autounattend.setup-mode.xml`，避免 Windows Setup 干扰；如果确实要保留，可传 `-KeepAutounattend`。
+
+## 旧方式：Autounattend 自动部署（legacy）
 
 1. 使用 Windows 11 24H2 ISO 正常制作启动 U 盘。
 2. 建议 U 盘使用 NTFS，容量 64GB 或 128GB。
