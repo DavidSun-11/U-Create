@@ -1,21 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="specialize">
-    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-      <ComputerName>ULSEE-*</ComputerName>
-      <RegisteredOwner>ULSEE</RegisteredOwner>
-      <RegisteredOrganization>ULSEE</RegisteredOrganization>
-      <TimeZone>China Standard Time</TimeZone>
-    </component>
-  </settings>
+
   <settings pass="oobeSystem">
-    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-      <InputLocale>zh-CN</InputLocale>
-      <SystemLocale>zh-CN</SystemLocale>
-      <UILanguage>zh-CN</UILanguage>
-      <UserLocale>zh-CN</UserLocale>
+
+    <component name="Microsoft-Windows-International-Core"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+      <InputLocale>en-US</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UserLocale>en-US</UserLocale>
+
     </component>
-    <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
+    <component name="Microsoft-Windows-Shell-Setup"
+               processorArchitecture="amd64"
+               publicKeyToken="31bf3856ad364e35"
+               language="neutral"
+               versionScope="nonSxS"
+               xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State"
+               xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+
       <AutoLogon>
         <Password>
           <Value>p@SSW0RD!</Value>
@@ -25,6 +35,7 @@
         <LogonCount>1</LogonCount>
         <Username>ulsee</Username>
       </AutoLogon>
+
       <OOBE>
         <HideEULAPage>true</HideEULAPage>
         <HideLocalAccountScreen>true</HideLocalAccountScreen>
@@ -34,7 +45,9 @@
         <SkipMachineOOBE>true</SkipMachineOOBE>
         <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
+
     </component>
+
   </settings>
-  <cpi:offlineImage cpi:source="wim:c:/images/install.wim#Windows 11" xmlns:cpi="urn:schemas-microsoft-com:cpi" />
+
 </unattend>

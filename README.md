@@ -80,6 +80,38 @@ U盘:\DeployLogs\deploy-success.flag
 
 `boot.wim` direct mode 下，`Autounattend.xml` 不是主入口。`patch-boot-wim.ps1` 默认会把 U 盘根目录的 `Autounattend.xml` 改名为 `Autounattend.setup-mode.xml`，避免 Windows Setup 干扰；如果确实要保留，可传 `-KeepAutounattend`。
 
+## 目标系统 unattend.xml：最小 oobeSystem 版
+
+当前推荐的 `unattend.xml` 是“最小 oobeSystem 版”。它只保留：
+
+- `Microsoft-Windows-International-Core`
+- `Microsoft-Windows-Shell-Setup`
+- `AutoLogon` 本地用户 `ulsee`
+- OOBE 跳过配置
+
+它不创建 `LocalAccounts`，不启用内置 Administrator，不加域。
+
+仓库不再使用 `specialize` 阶段配置，也不再写入 `ComputerName`。现场验证中，带有 `<ComputerName>ULSEE-*</ComputerName>` 的 `specialize` 阶段可能导致第一次启动时报错：
+
+```text
+Windows could not parse or process the unattend answer file for pass [specialize],
+component [Microsoft-Windows-Shell-Setup].
+```
+
+如果后续需要 `ULSEE` 前缀命名，建议在系统部署完成后通过脚本、域策略或资产管理流程改名，不在 unattend 的 `specialize` 阶段处理。
+
+更新 U 盘上的部署文件：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\copy-to-usb.ps1 -UsbDrive F:
+```
+
+如果使用 `boot.wim` direct mode，再确认 `boot.wim` 已 patch；必要时重新运行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\tools\patch-boot-wim.ps1 -UsbDrive F: -PatchAllIndexes -Force
+```
+
 ## 旧方式：Autounattend 自动部署（legacy）
 
 1. 使用 Windows 11 24H2 ISO 正常制作启动 U 盘。
@@ -146,10 +178,10 @@ U盘:\DeployLogs\deploy-success.flag
 - 使用 `dism /Apply-Image` 应用镜像，优先 `Images\install.wim`，其次 `sources\install.wim`
 - 将 `unattend.xml` 复制到 `W:\Windows\Panther\Unattend.xml`
 - 如果存在 `Windows\Setup\Scripts`，复制到 `W:\Windows\Setup\Scripts\`
-- 执行 `bcdboot W:\Windows /s S: /f UEFI`
+- 执行 `bcdboot W:\Windows /l en-US /s S: /f UEFI /v`
 - 执行 `wpeutil reboot`
 
-目标系统的 `unattend.xml` 不创建本地账号、不启用内置 Administrator、不加域。它会跳过 OOBE，并自动登录镜像中已经存在的本地管理员账号 `ulsee`，密码为 `p@SSW0RD!`，登录次数为 1。
+目标系统的 `unattend.xml` 使用最小 `oobeSystem` 配置，不创建本地账号、不启用内置 Administrator、不加域、不使用 `specialize` 阶段。它会跳过 OOBE，并自动登录镜像中已经存在的本地管理员账号 `ulsee`，密码为 `p@SSW0RD!`，登录次数为 1。
 
 ## 使用复制工具写入 U 盘
 

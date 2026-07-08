@@ -292,7 +292,7 @@ function Get-DeployScriptBehavior {
         ImageFileUsesVariable = $imageFileUsesVariable
         ImageFileUsesFixedDrive = $imageFileUsesFixedDrive
         ApplyDirIsW = ($content -match '(?i)/ApplyDir:W:\\')
-        BcdbootIsUefiWS = ($content -match '(?i)bcdboot\s+W:\\Windows\s+/s\s+S:\s+/f\s+UEFI')
+        BcdbootIsUefiWS = ($content -match '(?i)bcdboot\s+W:\\Windows(?:\s+/l\s+en-US)?\s+/s\s+S:\s+/f\s+UEFI(?:\s+/v)?')
         SupportsAutoMode = ($content -match '(?i)/auto')
         AutoModeAvoidsPause = (($content -match '(?i)if\s+not\s+"%AUTO%"\s*==\s*"1"\s+pause') -or ($content -match '(?i)if\s+"%AUTO%"\s*==\s*"1"'))
         UsesImagesInstallWim = ($content -match '(?i)Images\\install\.wim')
@@ -489,7 +489,7 @@ $allAccessibleRoots = $volumes |
     ForEach-Object { $_.Root }
 
 $windowsMarkers = @('setup.exe', 'boot', 'efi', 'sources\boot.wim')
-$ulseeToolMarkers = @('Autounattend.xml', 'deploy.bat', 'diskpart-uefi.txt', 'unattend.xml')
+$ulseeToolMarkers = @('deploy.bat', 'diskpart-uefi.txt', 'unattend.xml')
 $candidateRoots = New-Object System.Collections.Generic.List[object]
 
 foreach ($root in $scanRoots) {
@@ -644,7 +644,7 @@ if ($candidateRoots.Count -eq 0) {
         Add-Line "DISM ImageFile uses variable: $($behavior.ImageFileUsesVariable)"
         Add-Line "DISM ImageFile uses fixed drive path: $($behavior.ImageFileUsesFixedDrive)"
         Add-ContainsCheck -Label 'DISM ApplyDir is W:\' -Passed $behavior.ApplyDirIsW
-        Add-ContainsCheck -Label 'bcdboot uses W:\Windows /s S: /f UEFI' -Passed $behavior.BcdbootIsUefiWS
+        Add-ContainsCheck -Label 'bcdboot uses W:\Windows /l en-US /s S: /f UEFI /v compatible command' -Passed $behavior.BcdbootIsUefiWS
         Add-ContainsCheck -Label 'deploy.bat supports /auto mode' -Passed $behavior.SupportsAutoMode
         Add-ContainsCheck -Label '/auto mode is designed to avoid pause prompts' -Passed $behavior.AutoModeAvoidsPause
         Add-Line "deploy.bat only recognizes Images\install.wim: $($behavior.OnlyUsesImagesInstallWim)"
@@ -821,7 +821,6 @@ if ($candidateRoots.Count -eq 0) {
         }
 
         $toolsCopied = (
-            (Test-DeployPath -Root $candidate.Root -RelativePath 'Autounattend.xml') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'deploy.bat') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'diskpart-uefi.txt') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'unattend.xml')
@@ -920,7 +919,6 @@ if ($candidateRoots.Count -eq 0) {
         $preferredDeployImage = Get-PreferredDeployImage -Root $candidate.Root
         $sourcesWimExists = Test-Path -LiteralPath $sourcesWimPath -PathType Leaf
         $toolsCopied = (
-            (Test-DeployPath -Root $candidate.Root -RelativePath 'Autounattend.xml') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'deploy.bat') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'diskpart-uefi.txt') -and
             (Test-DeployPath -Root $candidate.Root -RelativePath 'unattend.xml')
@@ -988,7 +986,7 @@ foreach ($candidate in $candidateRoots) {
         Add-ContainsCheck -Label 'deploy.bat contains diskpart-uefi.txt' -Passed ($content -match '(?i)diskpart-uefi\.txt')
         Add-ContainsCheck -Label 'deploy.bat contains /Apply-Image' -Passed ($content -match '(?i)/Apply-Image')
         Add-ContainsCheck -Label 'deploy.bat contains /ApplyDir:W:' -Passed ($content -match '(?i)/ApplyDir:W:\\')
-        Add-ContainsCheck -Label 'deploy.bat contains bcdboot W:\Windows /s S: /f UEFI' -Passed ($content -match '(?i)bcdboot\s+W:\\Windows\s+/s\s+S:\s+/f\s+UEFI')
+        Add-ContainsCheck -Label 'deploy.bat contains bcdboot W:\Windows /l en-US /s S: /f UEFI /v compatible command' -Passed ($content -match '(?i)bcdboot\s+W:\\Windows(?:\s+/l\s+en-US)?\s+/s\s+S:\s+/f\s+UEFI(?:\s+/v)?')
     } else {
         Add-Line "[$script:StatusMissing] deploy.bat validation skipped because file is missing."
     }
@@ -1013,6 +1011,9 @@ foreach ($candidate in $candidateRoots) {
         Add-ContainsCheck -Label 'unattend.xml Username is ulsee' -Passed ($safeContent -match '(?is)<Username>\s*ulsee\s*</Username>')
         Add-ContainsCheck -Label 'unattend.xml contains SkipMachineOOBE' -Passed ($safeContent -match '(?i)SkipMachineOOBE')
         Add-ContainsCheck -Label 'unattend.xml contains SkipUserOOBE' -Passed ($safeContent -match '(?i)SkipUserOOBE')
+        Add-ContainsCheck -Label 'unattend.xml uses oobeSystem pass' -Passed ($safeContent -match '(?i)pass="oobeSystem"')
+        Add-ContainsCheck -Label 'unattend.xml does not contain specialize pass' -Passed ($safeContent -notmatch '(?i)specialize')
+        Add-ContainsCheck -Label 'unattend.xml does not contain ComputerName' -Passed ($safeContent -notmatch '(?i)ComputerName')
         Add-ContainsCheck -Label 'unattend.xml does not contain LocalAccounts' -Passed ($safeContent -notmatch '(?i)LocalAccounts') -WarningWhenFailed $true
         Add-ContainsCheck -Label 'unattend.xml does not contain Microsoft-Windows-UnattendedJoin' -Passed ($safeContent -notmatch '(?i)Microsoft-Windows-UnattendedJoin') -WarningWhenFailed $true
         if ($safeContent -match '(?is)<Password\b[^>]*>.*?<Value>\*\*\*REDACTED\*\*\*</Value>.*?</Password>') {
